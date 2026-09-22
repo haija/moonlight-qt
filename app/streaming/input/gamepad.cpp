@@ -7,6 +7,8 @@
 
 #include <QtMath>
 
+#include <cstring>
+
 // How long the Start button must be pressed to toggle mouse emulation
 #define MOUSE_EMULATION_LONG_PRESS_TIME 750
 
@@ -220,6 +222,40 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
                                lsY,
                                rsX,
                                rsY);
+}
+
+SDL_GameController* SdlInputHandler::getNativeDualSenseController() const
+{
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    const int controllerNumber = getNativeDualSenseControllerNumber();
+    if (controllerNumber < 0) {
+        return nullptr;
+    }
+    for (int i = 0; i < MAX_GAMEPADS; i++) {
+        if (m_GamepadState[i].controller != nullptr &&
+            m_GamepadState[i].index == controllerNumber &&
+            SDL_GameControllerGetType(m_GamepadState[i].controller) == SDL_CONTROLLER_TYPE_PS5) {
+            return m_GamepadState[i].controller;
+        }
+    }
+#endif
+    return nullptr;
+}
+
+bool SdlInputHandler::isNativeDualSenseBluetooth() const
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    SDL_GameController* controller = getNativeDualSenseController();
+    if (controller == nullptr) {
+        return false;
+    }
+    const char* path = SDL_JoystickPath(SDL_GameControllerGetJoystick(controller));
+    return path != nullptr &&
+           (std::strstr(path, "00001124-0000-1000-8000-00805f9b34fb") != nullptr ||
+            std::strstr(path, "BTH") != nullptr || std::strstr(path, "Bluetooth") != nullptr);
+#else
+    return false;
+#endif
 }
 
 void SdlInputHandler::sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level)

@@ -3587,9 +3587,12 @@ void Session::notifyMouseEmulationMode(bool enabled)
 void Session::updateDualSenseHapticsControllerTarget()
 {
     if (m_DualSenseHapticsRenderer != nullptr) {
+        const int controllerNumber =
+            m_InputHandler != nullptr ? m_InputHandler->getNativeDualSenseControllerNumber() : -1;
         m_DualSenseHapticsRenderer->setControllerTarget(
-            m_InputHandler != nullptr ?
-                m_InputHandler->getNativeDualSenseControllerNumber() : -1);
+            controllerNumber,
+            m_InputHandler != nullptr ? m_InputHandler->getNativeDualSenseController() : nullptr,
+            m_InputHandler != nullptr && m_InputHandler->isNativeDualSenseBluetooth());
     }
 }
 
@@ -3605,6 +3608,11 @@ void Session::handleSdlUserEvent(const SDL_UserEvent& event)
         m_FlushingWindowEventsRef--;
         break;
     case SDL_CODE_GAMECONTROLLER_RUMBLE:
+        if (m_DualSenseHapticsRenderer != nullptr) {
+            m_DualSenseHapticsRenderer->setBluetoothRumble(
+                (uint16_t)(uintptr_t)event.data1, (uint16_t)((uintptr_t)event.data2 >> 16),
+                (uint16_t)((uintptr_t)event.data2 & 0xFFFF));
+        }
         m_InputHandler->rumble((uint16_t)(uintptr_t)event.data1,
                                (uint16_t)((uintptr_t)event.data2 >> 16),
                                (uint16_t)((uintptr_t)event.data2 & 0xFFFF));
@@ -3620,12 +3628,21 @@ void Session::handleSdlUserEvent(const SDL_UserEvent& event)
                                             (uint16_t)((uintptr_t)event.data2 & 0xFFFF));
         break;
     case SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED:
+        if (m_DualSenseHapticsRenderer != nullptr) {
+            m_DualSenseHapticsRenderer->setBluetoothLed(
+                (uint16_t)(uintptr_t)event.data1, (uint8_t)((uintptr_t)event.data2 >> 16),
+                (uint8_t)((uintptr_t)event.data2 >> 8), (uint8_t)((uintptr_t)event.data2));
+        }
         m_InputHandler->setControllerLED((uint16_t)(uintptr_t)event.data1,
                                          (uint8_t)((uintptr_t)event.data2 >> 16),
                                          (uint8_t)((uintptr_t)event.data2 >> 8),
                                          (uint8_t)((uintptr_t)event.data2));
         break;
     case SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS:
+        if (m_DualSenseHapticsRenderer != nullptr) {
+            m_DualSenseHapticsRenderer->setBluetoothAdaptiveTriggers(
+                (uint16_t)(uintptr_t)event.data1, (DualSenseOutputReport*)event.data2);
+        }
         m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.data1,
                                             (DualSenseOutputReport *)event.data2);
         break;
@@ -3750,6 +3767,9 @@ bool Session::tryReconnect()
         if (m_InputHandler != nullptr &&
             (ev.type == SDL_CONTROLLERDEVICEADDED ||
              ev.type == SDL_CONTROLLERDEVICEREMOVED)) {
+            if (ev.type == SDL_CONTROLLERDEVICEREMOVED && m_DualSenseHapticsRenderer != nullptr) {
+                m_DualSenseHapticsRenderer->setControllerTarget(-1);
+            }
             m_InputHandler->handleControllerDeviceEvent(&ev.cdevice, false);
             updateDualSenseHapticsControllerTarget();
         }
@@ -4249,6 +4269,7 @@ void Session::start()
 #endif
 
     bool enablePhysicalDualSenseHaptics = false;
+    bool usbDualSenseHapticsAvailable = false;
     k_ConnCallbacks.ds5HapticsPcm = nullptr;
     k_ConnCallbacks.ds5HapticsIrV2 = nullptr;
     if (m_Preferences->dualSenseHapticsMode == StreamingPreferences::DSHM_PHYSICAL) {
@@ -4258,9 +4279,7 @@ void Session::start()
         if (m_DualSenseHapticsRenderer == nullptr) {
             m_DualSenseHapticsRenderer = new DualSenseHapticsRenderer();
         }
-        if (!DualSenseHapticsRenderer::isAvailable()) {
-            emitLaunchWarning(tr("Physical DualSense haptics was selected, but no active USB DualSense four-channel audio endpoint was found yet. Moonlight will keep checking during this stream."));
-        }
+        usbDualSenseHapticsAvailable = DualSenseHapticsRenderer::isAvailable();
 #else
         emitLaunchWarning(tr("Physical DualSense haptics is only available on Windows in this build."));
 #endif
@@ -4279,6 +4298,13 @@ void Session::start()
     m_InputHandler = new SdlInputHandler(*m_Preferences, m_StreamConfig.width,
                                          m_StreamConfig.height, enablePhysicalDualSenseHaptics);
     updateDualSenseHapticsControllerTarget();
+    if (enablePhysicalDualSenseHaptics && !usbDualSenseHapticsAvailable &&
+        (m_DualSenseHapticsRenderer == nullptr ||
+         !m_DualSenseHapticsRenderer->isBluetoothActive())) {
+        emitLaunchWarning(
+            tr("No native DualSense haptics output is active. Connect the controller over USB, or "
+               "pair it over Bluetooth and use the bundled Bluetooth-capable SDL runtime."));
+    }
 
     // Kick off the async connection thread then return to the caller to pump the event loop
     auto thread = new AsyncConnectionStartThread(this);
@@ -5496,6 +5522,10 @@ void Session::exec()
 #endif
         case SDL_CONTROLLERDEVICEADDED:
         case SDL_CONTROLLERDEVICEREMOVED:
+            if (event.type == SDL_CONTROLLERDEVICEREMOVED &&
+                m_DualSenseHapticsRenderer != nullptr) {
+                m_DualSenseHapticsRenderer->setControllerTarget(-1);
+            }
             m_InputHandler->handleControllerDeviceEvent(&event.cdevice);
             updateDualSenseHapticsControllerTarget();
             break;

@@ -28,4 +28,9 @@ foreach ($AssetName in $Assets) {
     Remove-Item $ArchivePath
 }
 
+if ($env:MOONLIGHT_SKIP_DUALSENSE_SDL -ne '1') {
+    Write-Host "Building the pinned DualSense Bluetooth SDL runtime..." -ForegroundColor Cyan
+    & (Join-Path $PSScriptRoot 'scripts\build-dualsense-sdl.ps1') -DependenciesRoot $TargetDir
+}
+
 Write-Host "Dependencies successfully deployed" -ForegroundColor Green

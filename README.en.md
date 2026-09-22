@@ -31,6 +31,7 @@ You can use it like a regular Moonlight client, or pair it with a Foundation Sun
 
 - **Bidirectional clipboard sync**: supports text and PNG image sync between the client and Foundation Sunshine host, including common browser and native clipboard formats.
 - **High-quality microphone forwarding**: uses the microphone extension in `moonlight-common-c` for continuous audio input and multichannel scenarios.
+- **Native Bluetooth DualSense haptics on Windows**: forwards Foundation Sunshine's authored actuator PCM to a directly paired DualSense while preserving adaptive-trigger and LED state. See [DualSense Bluetooth on Windows](DUALSENSE_BLUETOOTH_WINDOWS.md) for the controller-audio boundary and test requirements.
 - **Remote resolution decoupling**: stream resolution can be independent from the local display resolution, with custom remote resolution and frame-rate controls.
 - **AppView display control**: supports target display selection, virtual display groups, remote resolution, and remote frame-rate preferences so the client and Foundation Sunshine share the same display intent.
 - **Folder mapping / host file access**: exposes Foundation Sunshine folder-mapping features in the client, including in-stream access to shared host files and cross-platform mount support.

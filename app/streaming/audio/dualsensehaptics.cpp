@@ -1,4 +1,5 @@
 #include "dualsensehaptics.h"
+#include "dualsensebluetooth.h"
 #include "dualsensehapticsstream.h"
 
 #include "SDL_compat.h"
@@ -59,6 +60,7 @@ struct DualSenseHapticsRenderer::Impl
     std::atomic_bool stopping{false};
 
 #ifdef Q_OS_WIN32
+    DualSenseBluetoothRenderer bluetoothRenderer;
     ComPtr<IAudioClient> audioClient;
     ComPtr<IAudioRenderClient> renderClient;
     UINT32 bufferFrames = 0;
@@ -450,6 +452,11 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
         return;
     }
 
+    if (m_Impl->bluetoothRenderer.isActive()) {
+        m_Impl->bluetoothRenderer.submit(frame);
+        return;
+    }
+
     Packet packet;
     packet.flags = frame.flags;
     packet.controllerNumber = frame.controllerNumber;
@@ -472,20 +479,72 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
 #endif
 }
 
-void DualSenseHapticsRenderer::setControllerTarget(int controllerNumber)
+void DualSenseHapticsRenderer::setControllerTarget(int controllerNumber,
+                                                   SDL_GameController* controller, bool bluetooth)
 {
-#ifdef Q_OS_MACOS
+#ifdef Q_OS_WIN32
+    m_Impl->bluetoothRenderer.setController(controllerNumber, controller, bluetooth);
+#elif defined(Q_OS_MACOS)
     if (m_Impl->macRenderer != nullptr) {
         m_Impl->macRenderer->setControllerTarget(controllerNumber);
     }
 #else
     (void)controllerNumber;
+    (void)controller;
+    (void)bluetooth;
+#endif
+}
+
+bool DualSenseHapticsRenderer::isBluetoothActive() const
+{
+#ifdef Q_OS_WIN32
+    return m_Impl->bluetoothRenderer.isActive();
+#else
+    return false;
+#endif
+}
+
+void DualSenseHapticsRenderer::setBluetoothRumble(uint16_t controllerNumber, uint16_t lowFrequency,
+                                                  uint16_t highFrequency)
+{
+#ifdef Q_OS_WIN32
+    m_Impl->bluetoothRenderer.setRumble(controllerNumber, lowFrequency, highFrequency);
+#else
+    (void)controllerNumber;
+    (void)lowFrequency;
+    (void)highFrequency;
+#endif
+}
+
+void DualSenseHapticsRenderer::setBluetoothLed(uint16_t controllerNumber, uint8_t red,
+                                               uint8_t green, uint8_t blue)
+{
+#ifdef Q_OS_WIN32
+    m_Impl->bluetoothRenderer.setLed(controllerNumber, red, green, blue);
+#else
+    (void)controllerNumber;
+    (void)red;
+    (void)green;
+    (void)blue;
+#endif
+}
+
+void DualSenseHapticsRenderer::setBluetoothAdaptiveTriggers(uint16_t controllerNumber,
+                                                            const DualSenseOutputReport* report)
+{
+#ifdef Q_OS_WIN32
+    m_Impl->bluetoothRenderer.setAdaptiveTriggers(controllerNumber, report);
+#else
+    (void)controllerNumber;
+    (void)report;
 #endif
 }
 
 void DualSenseHapticsRenderer::reset()
 {
-#ifdef Q_OS_MACOS
+#ifdef Q_OS_WIN32
+    m_Impl->bluetoothRenderer.reset();
+#elif defined(Q_OS_MACOS)
     if (m_Impl->macRenderer != nullptr) {
         m_Impl->macRenderer->reset();
     }

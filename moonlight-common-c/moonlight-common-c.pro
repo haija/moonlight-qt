@@ -60,6 +60,7 @@ SOURCES += \
     $$COMMON_C_DIR/src/ControlStream.c \
     $$COMMON_C_DIR/src/CursorStream.c \
     $$COMMON_C_DIR/src/Ds5HapticsStream.c \
+    $$COMMON_C_DIR/src/Ds5AudioStream.c \
     $$COMMON_C_DIR/src/Ds5HapticsIrStream.c \
     $$COMMON_C_DIR/src/FakeCallbacks.c \
     $$COMMON_C_DIR/src/InputStream.c \
@@ -82,6 +83,7 @@ SOURCES += \
 HEADERS += \
     $$COMMON_C_DIR/src/CursorStream.h \
     $$COMMON_C_DIR/src/Ds5HapticsStream.h \
+    $$COMMON_C_DIR/src/Ds5AudioStream.h \
     $$COMMON_C_DIR/src/Ds5HapticsIrStream.h \
     $$COMMON_C_DIR/src/Limelight.h
 INCLUDEPATH += \

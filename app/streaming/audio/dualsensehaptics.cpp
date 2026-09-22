@@ -1,6 +1,7 @@
 #include "dualsensehaptics.h"
 #include "dualsensebluetooth.h"
 #include "dualsensehapticsstream.h"
+#include "streaming/input/input.h"
 
 #include "SDL_compat.h"
 
@@ -47,6 +48,7 @@ struct Packet
     std::uint8_t flags = 0;
     std::uint16_t controllerNumber = 0;
     std::uint16_t frameCount = 0;
+    std::uint8_t channelCount = 2;
     std::uint32_t sequenceNumber = 0;
     std::vector<std::uint8_t> pcm;
 };
@@ -71,6 +73,7 @@ struct DualSenseHapticsRenderer::Impl
     std::deque<Packet> prebuffer;
     std::uint32_t prebufferedFrames = 0;
     std::chrono::steady_clock::time_point nextEndpointProbe{};
+    SDL_GameController* usbController = nullptr;
 
     // Keep this last: run() may access every member as soon as the thread starts.
     std::thread worker;
@@ -230,26 +233,35 @@ struct DualSenseHapticsRenderer::Impl
         const auto* input = reinterpret_cast<const std::int16_t*>(packet.pcm.data());
         if (floatSamples) {
             auto* samples = reinterpret_cast<float*>(output);
-            std::fill_n(samples, static_cast<std::size_t>(packet.frameCount) * 4, 0.0f);
             for (std::uint16_t i = 0; i < packet.frameCount; i++) {
-                samples[i * 4 + 2] = input[i * 2] / 32768.0f;
-                samples[i * 4 + 3] = input[i * 2 + 1] / 32768.0f;
+                samples[i * 4] = packet.channelCount == 4 ? input[i * 4] / 32768.0f : 0.0f;
+                samples[i * 4 + 1] = packet.channelCount == 4 ? input[i * 4 + 1] / 32768.0f : 0.0f;
+                const auto hapticOffset = packet.channelCount == 4 ? i * 4 + 2 : i * 2;
+                samples[i * 4 + 2] = input[hapticOffset] / 32768.0f;
+                samples[i * 4 + 3] = input[hapticOffset + 1] / 32768.0f;
             }
         }
         else if (bitsPerSample == 16) {
             auto* samples = reinterpret_cast<std::int16_t*>(output);
-            std::fill_n(samples, static_cast<std::size_t>(packet.frameCount) * 4, 0);
             for (std::uint16_t i = 0; i < packet.frameCount; i++) {
-                samples[i * 4 + 2] = input[i * 2];
-                samples[i * 4 + 3] = input[i * 2 + 1];
+                samples[i * 4] = packet.channelCount == 4 ? input[i * 4] : 0;
+                samples[i * 4 + 1] = packet.channelCount == 4 ? input[i * 4 + 1] : 0;
+                const auto hapticOffset = packet.channelCount == 4 ? i * 4 + 2 : i * 2;
+                samples[i * 4 + 2] = input[hapticOffset];
+                samples[i * 4 + 3] = input[hapticOffset + 1];
             }
         }
         else {
             auto* samples = reinterpret_cast<std::int32_t*>(output);
-            std::fill_n(samples, static_cast<std::size_t>(packet.frameCount) * 4, 0);
             for (std::uint16_t i = 0; i < packet.frameCount; i++) {
-                samples[i * 4 + 2] = static_cast<std::int32_t>(input[i * 2]) * 65536;
-                samples[i * 4 + 3] = static_cast<std::int32_t>(input[i * 2 + 1]) * 65536;
+                samples[i * 4] =
+                    packet.channelCount == 4 ? static_cast<std::int32_t>(input[i * 4]) * 65536 : 0;
+                samples[i * 4 + 1] = packet.channelCount == 4
+                                         ? static_cast<std::int32_t>(input[i * 4 + 1]) * 65536
+                                         : 0;
+                const auto hapticOffset = packet.channelCount == 4 ? i * 4 + 2 : i * 2;
+                samples[i * 4 + 2] = static_cast<std::int32_t>(input[hapticOffset]) * 65536;
+                samples[i * 4 + 3] = static_cast<std::int32_t>(input[hapticOffset + 1]) * 65536;
             }
         }
         return SUCCEEDED(renderClient->ReleaseBuffer(packet.frameCount, 0));
@@ -367,6 +379,51 @@ struct DualSenseHapticsRenderer::Impl
         audioClient.Reset();
         CoUninitialize();
     }
+
+    void setUsbController(SDL_GameController* controller)
+    {
+        if (usbController == controller)
+            return;
+        usbController = controller;
+        if (controller == nullptr)
+            return;
+
+        auto send = [controller](const std::array<uint8_t, sizeof(DualSenseOutputReport)>& effect) {
+            return SDL_GameControllerSendEffect(controller, effect.data(),
+                                                static_cast<int>(effect.size())) == 0;
+        };
+        std::array<uint8_t, sizeof(DualSenseOutputReport)> route = {};
+        route[0] = 0xf3;
+        route[4] = 0xff;
+        route[5] = 0xff;
+        route[6] = 0x40;
+        route[7] = 0x01;
+        bool routeOk = send(route);
+        SDL_Delay(40);
+        routeOk = send(route) && routeOk;
+
+        std::array<uint8_t, sizeof(DualSenseOutputReport)> musicRumble = {};
+        musicRumble[0] = 0xe0;
+        musicRumble[4] = 0x7f;
+        musicRumble[5] = 0xff;
+        musicRumble[6] = 0x40;
+        musicRumble[7] = 0x30;
+        SDL_Delay(35);
+        const bool musicOk = send(musicRumble);
+
+        std::array<uint8_t, sizeof(DualSenseOutputReport)> wake = {};
+        wake[1] = 0x15;
+        wake[38] = 0x03;
+        wake[41] = 0x02;
+        wake[43] = 0x24;
+        SDL_Delay(35);
+        const bool wakeOk = send(wake);
+        SDL_Delay(35);
+        routeOk = send(route) && routeOk;
+        SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO,
+                    "DualSense USB audio activation: route=%s music-rumble=%s dsp-wake=%s",
+                    routeOk ? "ok" : "failed", musicOk ? "ok" : "failed", wakeOk ? "ok" : "failed");
+    }
 #else
     Impl()
     {
@@ -461,6 +518,7 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
     packet.flags = frame.flags;
     packet.controllerNumber = frame.controllerNumber;
     packet.frameCount = frame.frameCount;
+    packet.channelCount = 2;
     packet.sequenceNumber = frame.sequenceNumber;
     if (frame.pcmDataLength != 0) {
         packet.pcm.assign(frame.pcmData, frame.pcmData + frame.pcmDataLength);
@@ -483,6 +541,7 @@ void DualSenseHapticsRenderer::setControllerTarget(int controllerNumber,
                                                    SDL_GameController* controller, bool bluetooth)
 {
 #ifdef Q_OS_WIN32
+    m_Impl->setUsbController(bluetooth ? nullptr : controller);
     m_Impl->bluetoothRenderer.setController(controllerNumber, controller, bluetooth);
 #elif defined(Q_OS_MACOS)
     if (m_Impl->macRenderer != nullptr) {
@@ -492,6 +551,43 @@ void DualSenseHapticsRenderer::setControllerTarget(int controllerNumber,
     (void)controllerNumber;
     (void)controller;
     (void)bluetooth;
+#endif
+}
+
+void DualSenseHapticsRenderer::submit(const LI_DS5_AUDIO_PCM_FRAME& frame)
+{
+#ifdef Q_OS_WIN32
+    if (frame.sampleRate != 48000 || frame.channelCount != 4 || frame.bitsPerSample != 16 ||
+        frame.frameCount > 240 || frame.pcmDataLength != frame.frameCount * 8 ||
+        (frame.pcmDataLength != 0 && frame.pcmData == nullptr)) {
+        return;
+    }
+
+    if (m_Impl->bluetoothRenderer.isActive()) {
+        m_Impl->bluetoothRenderer.submit(frame);
+        return;
+    }
+
+    Packet packet;
+    packet.flags = frame.flags;
+    packet.controllerNumber = frame.controllerNumber;
+    packet.frameCount = frame.frameCount;
+    packet.channelCount = 4;
+    packet.sequenceNumber = frame.sequenceNumber;
+    if (frame.pcmDataLength != 0) {
+        packet.pcm.assign(frame.pcmData, frame.pcmData + frame.pcmDataLength);
+    }
+    {
+        std::lock_guard lock(m_Impl->mutex);
+        if (m_Impl->queue.size() == MaxQueuedPackets) {
+            m_Impl->queue.pop_front();
+            packet.flags |= LI_DS5_AUDIO_PCM_FLAG_DISCONTINUITY;
+        }
+        m_Impl->queue.emplace_back(std::move(packet));
+    }
+    m_Impl->condition.notify_one();
+#else
+    (void)frame;
 #endif
 }
 

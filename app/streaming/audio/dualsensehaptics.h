@@ -18,6 +18,7 @@ public:
 
     static bool isAvailable();
     void submit(const LI_DS5_HAPTICS_PCM_FRAME& frame);
+    void submit(const LI_DS5_AUDIO_PCM_FRAME& frame);
     void setControllerTarget(int controllerNumber, SDL_GameController* controller = nullptr,
                              bool bluetooth = false);
     bool isBluetoothActive() const;

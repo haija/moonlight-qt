@@ -384,6 +384,7 @@ CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clClipboardData,
     Session::clCursorUpdate,
     nullptr,
+    nullptr,
     nullptr
 };
 
@@ -1158,6 +1159,14 @@ void Session::getDecoderInfo(SDL_Window* window,
 
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                  "Failed to find ANY working H.264 or HEVC decoder!");
+}
+
+void Session::clDs5AudioPcm(const LI_DS5_AUDIO_PCM_FRAME* frame)
+{
+    Session* session = s_ActiveSession;
+    if (session != nullptr && session->m_DualSenseHapticsRenderer != nullptr && frame != nullptr) {
+        session->m_DualSenseHapticsRenderer->submit(*frame);
+    }
 }
 
 Session::DecoderAvailability
@@ -4272,10 +4281,12 @@ void Session::start()
     bool usbDualSenseHapticsAvailable = false;
     k_ConnCallbacks.ds5HapticsPcm = nullptr;
     k_ConnCallbacks.ds5HapticsIrV2 = nullptr;
+    k_ConnCallbacks.ds5AudioPcm = nullptr;
     if (m_Preferences->dualSenseHapticsMode == StreamingPreferences::DSHM_PHYSICAL) {
 #ifdef Q_OS_WIN32
         enablePhysicalDualSenseHaptics = true;
         k_ConnCallbacks.ds5HapticsPcm = Session::clDs5HapticsPcm;
+        k_ConnCallbacks.ds5AudioPcm = Session::clDs5AudioPcm;
         if (m_DualSenseHapticsRenderer == nullptr) {
             m_DualSenseHapticsRenderer = new DualSenseHapticsRenderer();
         }

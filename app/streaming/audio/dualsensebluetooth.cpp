@@ -4,6 +4,8 @@
 
 #include <QByteArray>
 
+#include <opus.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -35,6 +37,14 @@ DualSenseBluetoothRenderer::DualSenseBluetoothRenderer()
     }
     for (double& coefficient : m_Filter) {
         coefficient /= sum;
+    }
+}
+
+DualSenseBluetoothRenderer::~DualSenseBluetoothRenderer()
+{
+    std::lock_guard lock(m_Mutex);
+    if (m_Encoder != nullptr) {
+        opus_encoder_destroy(m_Encoder);
     }
 }
 
@@ -167,6 +177,7 @@ bool DualSenseBluetoothRenderer::sendMediaLocked()
     std::memcpy(report.data() + 78, m_HapticBlock.data(), m_HapticBlock.size());
     report[142] = 0x93;
     report[143] = 200;
+    std::copy(m_SpeakerOpus.begin(), m_SpeakerOpus.end(), report.begin() + 144);
 
     const uint32_t crc = bluetoothCrc(report.data(), report.size() - 4);
     for (int i = 0; i < 4; i++) {
@@ -183,7 +194,62 @@ void DualSenseBluetoothRenderer::resetStreamLocked()
     m_RingPosition = 0;
     m_DecimationPhase = 0;
     m_HapticPosition = 0;
+    m_SpeakerFrames = 0;
+    m_SpeakerOpus.fill(0);
     m_ExpectedSequence = -1;
+}
+
+void DualSenseBluetoothRenderer::consumeFrameLocked(int16_t speakerLeft, int16_t speakerRight,
+                                                    int16_t hapticLeft, int16_t hapticRight)
+{
+    m_SpeakerPcm[m_SpeakerFrames * 2] = speakerLeft;
+    m_SpeakerPcm[m_SpeakerFrames * 2 + 1] = speakerRight;
+    m_SpeakerFrames++;
+
+    m_LeftLane[m_RingPosition] = hapticLeft;
+    m_RightLane[m_RingPosition] = hapticRight;
+    m_RingPosition = (m_RingPosition + 1) % static_cast<int>(m_LeftLane.size());
+    if (++m_DecimationPhase == 16) {
+        m_DecimationPhase = 0;
+        if (m_HapticPosition + 1 < static_cast<int>(m_HapticBlock.size())) {
+            m_HapticBlock[m_HapticPosition++] = filterLaneLocked(m_LeftLane);
+            m_HapticBlock[m_HapticPosition++] = filterLaneLocked(m_RightLane);
+        }
+    }
+
+    if (m_SpeakerFrames == 512) {
+        std::array<int16_t, 480 * 2> resampled = {};
+        for (int outputFrame = 0; outputFrame < 480; outputFrame++) {
+            const int numerator = outputFrame * 16;
+            const int sourceFrame = numerator / 15;
+            const int fraction = numerator % 15;
+            const int nextFrame = std::min(sourceFrame + 1, 511);
+            for (int channel = 0; channel < 2; channel++) {
+                const int32_t first = m_SpeakerPcm[sourceFrame * 2 + channel];
+                const int32_t second = m_SpeakerPcm[nextFrame * 2 + channel];
+                resampled[outputFrame * 2 + channel] =
+                    static_cast<int16_t>((first * (15 - fraction) + second * fraction) / 15);
+            }
+        }
+        const int encoded =
+            m_Encoder != nullptr
+                ? opus_encode(m_Encoder, resampled.data(), 480, m_SpeakerOpus.data(),
+                              static_cast<opus_int32>(m_SpeakerOpus.size()))
+                : OPUS_INVALID_STATE;
+        if (encoded <= 0) {
+            m_SpeakerOpus.fill(0);
+        } else if (encoded < static_cast<int>(m_SpeakerOpus.size())) {
+            std::fill(m_SpeakerOpus.begin() + encoded, m_SpeakerOpus.end(), 0);
+        }
+
+        if (!sendMediaLocked()) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO, "DualSense Bluetooth audio report failed: %s",
+                        SDL_GetError());
+        }
+        m_SpeakerFrames = 0;
+        m_HapticPosition = 0;
+        m_HapticBlock.fill(0);
+    }
 }
 
 int8_t DualSenseBluetoothRenderer::filterLaneLocked(const std::array<double, 127>& lane) const
@@ -215,10 +281,26 @@ void DualSenseBluetoothRenderer::setController(int controllerNumber, SDL_GameCon
     m_WakeSent = false;
     m_Sequence = 0;
     m_PacketCounter = 0;
+    if (m_Encoder != nullptr) {
+        opus_encoder_destroy(m_Encoder);
+        m_Encoder = nullptr;
+    }
     resetStreamLocked();
 
     if (m_Active) {
-        m_Active = sendWakeLocked() && sendStateLocked();
+        int opusError = OPUS_OK;
+        m_Encoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &opusError);
+        if (m_Encoder != nullptr && opusError == OPUS_OK) {
+            opus_encoder_ctl(m_Encoder, OPUS_SET_BITRATE(160000));
+            opus_encoder_ctl(m_Encoder, OPUS_SET_VBR(0));
+            opus_encoder_ctl(m_Encoder, OPUS_SET_COMPLEXITY(0));
+            opus_encoder_ctl(m_Encoder, OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS));
+        } else {
+            if (m_Encoder != nullptr)
+                opus_encoder_destroy(m_Encoder);
+            m_Encoder = nullptr;
+        }
+        m_Active = m_Encoder != nullptr && sendWakeLocked() && sendStateLocked();
         SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "DualSense Bluetooth media transport: %s",
                     m_Active ? "ready" : "unavailable (compatible SDL runtime required)");
     }
@@ -286,6 +368,40 @@ void DualSenseBluetoothRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
             m_HapticPosition = 0;
             m_HapticBlock.fill(0);
         }
+    }
+}
+
+void DualSenseBluetoothRenderer::submit(const LI_DS5_AUDIO_PCM_FRAME& frame)
+{
+    std::lock_guard lock(m_Mutex);
+    if (!m_Active || !matchesController(m_ControllerNumber, frame.controllerNumber)) {
+        return;
+    }
+
+    const bool discontinuity = (frame.flags & (LI_DS5_AUDIO_PCM_FLAG_STREAM_START |
+                                               LI_DS5_AUDIO_PCM_FLAG_DISCONTINUITY)) != 0 ||
+                               (m_ExpectedSequence >= 0 &&
+                                frame.sequenceNumber != static_cast<uint32_t>(m_ExpectedSequence));
+    if (discontinuity)
+        resetStreamLocked();
+    m_ExpectedSequence = static_cast<int64_t>(frame.sequenceNumber) + 1;
+
+    if ((frame.flags & LI_DS5_AUDIO_PCM_FLAG_STREAM_END) != 0 && frame.frameCount == 0) {
+        m_HapticBlock.fill(0);
+        m_SpeakerOpus.fill(0);
+        sendMediaLocked();
+        resetStreamLocked();
+        return;
+    }
+    if (frame.sampleRate != SampleRate || frame.channelCount != 4 || frame.bitsPerSample != 16 ||
+        frame.frameCount == 0 || frame.pcmData == nullptr ||
+        frame.pcmDataLength != static_cast<uint32_t>(frame.frameCount) * 8) {
+        return;
+    }
+
+    const auto* pcm = reinterpret_cast<const int16_t*>(frame.pcmData);
+    for (uint16_t i = 0; i < frame.frameCount; i++) {
+        consumeFrameLocked(pcm[i * 4], pcm[i * 4 + 1], pcm[i * 4 + 2], pcm[i * 4 + 3]);
     }
 }
 

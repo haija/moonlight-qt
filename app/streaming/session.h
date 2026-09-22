@@ -305,6 +305,8 @@ private:
     static
     void clDs5HapticsPcm(const LI_DS5_HAPTICS_PCM_FRAME* frame);
 
+    static void clDs5AudioPcm(const LI_DS5_AUDIO_PCM_FRAME* frame);
+
     static
     void clDs5HapticsIrV2(const LI_DS5_HAPTICS_IR_FRAME_V2* frame);
 

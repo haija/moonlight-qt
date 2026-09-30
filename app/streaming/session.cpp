@@ -4291,7 +4291,6 @@ void Session::start()
         if (m_DualSenseHapticsRenderer == nullptr) {
             m_DualSenseHapticsRenderer = new DualSenseHapticsRenderer();
         }
-        usbDualSenseHapticsAvailable = DualSenseHapticsRenderer::isAvailable();
 #else
         emitLaunchWarning(tr("Physical DualSense haptics is only available on Windows in this build."));
 #endif
@@ -4310,12 +4309,17 @@ void Session::start()
     m_InputHandler = new SdlInputHandler(*m_Preferences, m_StreamConfig.width,
                                          m_StreamConfig.height, enablePhysicalDualSenseHaptics);
     updateDualSenseHapticsControllerTarget();
+    usbDualSenseHapticsAvailable = m_InputHandler != nullptr &&
+        !m_InputHandler->isNativeDualSenseBluetooth() &&
+        m_DualSenseHapticsRenderer != nullptr && m_DualSenseHapticsRenderer->isUsbActive() &&
+        DualSenseHapticsRenderer::isAvailable(m_InputHandler->getNativeDualSenseController());
     if (enablePhysicalDualSenseHaptics && !usbDualSenseHapticsAvailable &&
         (m_DualSenseHapticsRenderer == nullptr ||
          !m_DualSenseHapticsRenderer->isBluetoothActive())) {
         emitLaunchWarning(
-            tr("No native DualSense haptics output is active. Connect the controller over USB, or "
-               "pair it over Bluetooth and use the bundled Bluetooth-capable SDL runtime."));
+            tr("No native DualSense output is active. Connect a USB DualSense with one matching "
+               "four-channel audio endpoint, or pair it over Bluetooth with the bundled SDL runtime. "
+               "Ambiguous USB devices are not selected automatically."));
     }
 
     // Kick off the async connection thread then return to the caller to pump the event loop

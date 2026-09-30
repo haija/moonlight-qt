@@ -1,7 +1,9 @@
 #include "dualsensehaptics.h"
 #include "dualsensebluetooth.h"
 #include "dualsensehapticsstream.h"
-#include "streaming/input/input.h"
+#include "dualsensehapticsrouting.h"
+#include "dualsenseusbidentity.h"
+#include "streaming/input/dualsenseoutputreport.h"
 
 #include "SDL_compat.h"
 
@@ -50,6 +52,7 @@ struct Packet
     std::uint16_t frameCount = 0;
     std::uint8_t channelCount = 2;
     std::uint32_t sequenceNumber = 0;
+    std::uint64_t targetGeneration = 0;
     std::vector<std::uint8_t> pcm;
 };
 }
@@ -74,6 +77,12 @@ struct DualSenseHapticsRenderer::Impl
     std::uint32_t prebufferedFrames = 0;
     std::chrono::steady_clock::time_point nextEndpointProbe{};
     SDL_GameController* usbController = nullptr;
+    int usbControllerNumber = -1;
+    GUID usbContainer = GUID_NULL;
+    GUID endpointContainer = GUID_NULL; // Accessed only by the COM worker.
+    bool usbTargetReady = false;
+    bool targetChanged = false;
+    std::atomic_uint64_t targetGeneration{0};
 
     // Keep this last: run() may access every member as soon as the thread starts.
     std::thread worker;
@@ -92,15 +101,19 @@ struct DualSenseHapticsRenderer::Impl
         }
     }
 
-    static bool isDualSenseName(const std::wstring& name)
+    static bool matchesContainer(IMMDevice* device, const GUID& container)
     {
-        auto lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), towlower);
-        return lower.find(L"dualsense") != std::wstring::npos ||
-               lower.find(L"wireless controller") != std::wstring::npos ||
-               lower.find(L"hidmaestro") != std::wstring::npos;
+        if (container == GUID_NULL) return false;
+        ComPtr<IPropertyStore> properties;
+        if (FAILED(device->OpenPropertyStore(STGM_READ, &properties))) return false;
+        PROPVARIANT value;
+        PropVariantInit(&value);
+        const bool matches = SUCCEEDED(properties->GetValue(PKEY_Device_ContainerId, &value)) &&
+                             value.vt == VT_CLSID && value.puuid != nullptr &&
+                             *value.puuid == container;
+        PropVariantClear(&value);
+        return matches;
     }
-
     static bool classifyFormat(const WAVEFORMATEX* format, bool& isFloat, WORD& bits)
     {
         if (format->nSamplesPerSec != 48000 || format->nChannels != 4) {
@@ -124,82 +137,83 @@ struct DualSenseHapticsRenderer::Impl
         return isFloat || (subtype == KSDATAFORMAT_SUBTYPE_PCM && (bits == 16 || bits == 32));
     }
 
-    bool openEndpoint()
+    static bool findEndpoint(const GUID& container, ComPtr<IAudioClient>& candidate,
+                             std::vector<BYTE>& mixBytes, std::wstring& friendlyName)
     {
+        if (container == GUID_NULL) return false;
         ComPtr<IMMDeviceEnumerator> enumerator;
-        if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                    IID_PPV_ARGS(&enumerator)))) {
-            return false;
-        }
-
         ComPtr<IMMDeviceCollection> devices;
-        if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices))) {
-            return false;
-        }
-
+        if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                    IID_PPV_ARGS(&enumerator))) ||
+            FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices))) return false;
         UINT count = 0;
-        devices->GetCount(&count);
-        for (UINT i = 0; i < count; i++) {
+        if (FAILED(devices->GetCount(&count))) return false;
+        const int selected = dualsense_haptics::selectUniqueMatchingEndpoint(count, [&](std::size_t index) {
             ComPtr<IMMDevice> device;
-            if (FAILED(devices->Item(i, &device))) continue;
-
-            std::wstring friendlyName;
-            ComPtr<IPropertyStore> properties;
-            if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
-                PROPVARIANT value;
-                PropVariantInit(&value);
-                if (SUCCEEDED(properties->GetValue(PKEY_Device_FriendlyName, &value)) &&
-                    value.vt == VT_LPWSTR && value.pwszVal != nullptr) {
-                    friendlyName = value.pwszVal;
-                }
-                PropVariantClear(&value);
-            }
-            if (!isDualSenseName(friendlyName)) continue;
-
-            ComPtr<IAudioClient> candidate;
+            if (FAILED(devices->Item(static_cast<UINT>(index), &device)) ||
+                !matchesContainer(device.Get(), container)) return false;
+            ComPtr<IAudioClient> audio;
             if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                                        reinterpret_cast<void**>(candidate.GetAddressOf())))) {
-                continue;
-            }
-
+                                        reinterpret_cast<void**>(audio.GetAddressOf())))) return false;
             WAVEFORMATEX* mix = nullptr;
-            if (FAILED(candidate->GetMixFormat(&mix)) || mix == nullptr) {
+            if (FAILED(audio->GetMixFormat(&mix)) || mix == nullptr) {
                 CoTaskMemFree(mix);
-                continue;
+                return false;
             }
-            bool candidateFloat = false;
-            WORD candidateBits = 0;
-            const bool supported = classifyFormat(mix, candidateFloat, candidateBits);
-            if (!supported || FAILED(candidate->Initialize(
-                    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_NOPERSIST,
-                    500000, 0, mix, nullptr))) {
-                CoTaskMemFree(mix);
-                continue;
+            bool isFloat = false;
+            WORD bits = 0;
+            const bool supported = classifyFormat(mix, isFloat, bits);
+            if (supported) {
+                const auto* bytes = reinterpret_cast<const BYTE*>(mix);
+                mixBytes.assign(bytes, bytes + sizeof(WAVEFORMATEX) + mix->cbSize);
+                candidate = audio;
+                friendlyName.clear();
+                ComPtr<IPropertyStore> properties;
+                if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
+                    PROPVARIANT name;
+                    PropVariantInit(&name);
+                    if (SUCCEEDED(properties->GetValue(PKEY_Device_FriendlyName, &name)) &&
+                        name.vt == VT_LPWSTR && name.pwszVal) friendlyName = name.pwszVal;
+                    PropVariantClear(&name);
+                }
             }
             CoTaskMemFree(mix);
-
-            ComPtr<IAudioRenderClient> candidateRenderer;
-            if (FAILED(candidate->GetService(IID_PPV_ARGS(&candidateRenderer))) ||
-                FAILED(candidate->GetBufferSize(&bufferFrames))) {
-                continue;
-            }
-
-            audioClient = candidate;
-            renderClient = candidateRenderer;
-            floatSamples = candidateFloat;
-            bitsPerSample = candidateBits;
-            const QByteArray name = QString::fromStdWString(friendlyName).toUtf8();
-            SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO,
-                        "DualSense haptics endpoint ready: %s (48 kHz, 4 ch, %u-bit%s)",
-                        name.constData(), bitsPerSample, floatSamples ? " float" : " PCM");
-            return true;
-        }
-
-        SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO,
-                    "No active 48 kHz four-channel DualSense audio endpoint was found");
-        return false;
+            return supported;
+        });
+        // Zero matches and multiple matches both fail closed. Never fall back to
+        // a friendly-name match or the first four-channel device on the machine.
+        return selected >= 0;
     }
 
+    bool openEndpoint()
+    {
+        ComPtr<IAudioClient> candidate;
+        std::vector<BYTE> mixBytes;
+        std::wstring friendlyName;
+        if (!findEndpoint(endpointContainer, candidate, mixBytes, friendlyName)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_AUDIO,
+                        "Selected USB DualSense has no unique matching four-channel audio endpoint");
+            return false;
+        }
+        auto* mix = reinterpret_cast<WAVEFORMATEX*>(mixBytes.data());
+        bool candidateFloat = false;
+        WORD candidateBits = 0;
+        if (!classifyFormat(mix, candidateFloat, candidateBits) ||
+            FAILED(candidate->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_NOPERSIST,
+                                         500000, 0, mix, nullptr))) return false;
+        ComPtr<IAudioRenderClient> candidateRenderer;
+        if (FAILED(candidate->GetService(IID_PPV_ARGS(&candidateRenderer))) ||
+            FAILED(candidate->GetBufferSize(&bufferFrames))) return false;
+        audioClient = candidate;
+        renderClient = candidateRenderer;
+        floatSamples = candidateFloat;
+        bitsPerSample = candidateBits;
+        const QByteArray name = QString::fromStdWString(friendlyName).toUtf8();
+        SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO,
+                    "Selected DualSense USB endpoint ready: %s (48 kHz, 4 ch, %u-bit%s)",
+                    name.constData(), bitsPerSample, floatSamples ? " float" : " PCM");
+        return true;
+    }
     void resetAudioStream()
     {
         if (audioClient) {
@@ -220,7 +234,10 @@ struct DualSenseHapticsRenderer::Impl
     bool writePacket(const Packet& packet)
     {
         if (!audioClient || !renderClient || packet.frameCount == 0) return true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
         while (!stopping) {
+            if (packet.targetGeneration != targetGeneration.load() ||
+                std::chrono::steady_clock::now() >= deadline) return false;
             UINT32 padding = 0;
             if (FAILED(audioClient->GetCurrentPadding(&padding))) return false;
             if (bufferFrames - padding >= packet.frameCount) break;
@@ -264,7 +281,9 @@ struct DualSenseHapticsRenderer::Impl
                 samples[i * 4 + 3] = static_cast<std::int32_t>(input[hapticOffset + 1]) * 65536;
             }
         }
-        return SUCCEEDED(renderClient->ReleaseBuffer(packet.frameCount, 0));
+        const bool currentTarget = packet.targetGeneration == targetGeneration.load();
+        return SUCCEEDED(renderClient->ReleaseBuffer(packet.frameCount,
+                    currentTarget ? 0 : AUDCLNT_BUFFERFLAGS_SILENT)) && currentTarget;
     }
 
     bool startPrebufferedStream()
@@ -281,6 +300,7 @@ struct DualSenseHapticsRenderer::Impl
 
     void process(Packet packet)
     {
+        if (packet.targetGeneration != targetGeneration.load()) return;
         const auto action = streamTracker.observe(packet.flags, packet.controllerNumber,
                                                   packet.sequenceNumber);
         if (action == dualsense_haptics::PcmStreamTracker::Action::Ignore) {
@@ -364,14 +384,30 @@ struct DualSenseHapticsRenderer::Impl
 
         while (!stopping) {
             Packet packet;
+            bool changed = false;
+            bool havePacket = false;
             {
                 std::unique_lock lock(mutex);
-                condition.wait(lock, [this] { return stopping || !queue.empty(); });
+                condition.wait(lock, [this] { return stopping || targetChanged || !queue.empty(); });
                 if (stopping) break;
-                packet = std::move(queue.front());
-                queue.pop_front();
+                changed = targetChanged;
+                if (changed) {
+                    endpointContainer = usbContainer;
+                    targetChanged = false;
+                }
+                if (!queue.empty()) {
+                    packet = std::move(queue.front());
+                    queue.pop_front();
+                    havePacket = true;
+                }
             }
-            process(std::move(packet));
+            if (changed) {
+                resetStream();
+                renderClient.Reset();
+                audioClient.Reset();
+                nextEndpointProbe = {};
+            }
+            if (havePacket) process(std::move(packet));
         }
 
         resetStream();
@@ -380,13 +416,40 @@ struct DualSenseHapticsRenderer::Impl
         CoUninitialize();
     }
 
-    void setUsbController(SDL_GameController* controller)
+    void enqueuePacket(Packet packet)
     {
-        if (usbController == controller)
-            return;
-        usbController = controller;
-        if (controller == nullptr)
-            return;
+        {
+            std::lock_guard lock(mutex);
+            if (!dualsense_haptics::canUseNativeController(packet.controllerNumber,
+                    usbControllerNumber, usbTargetReady ? 1 : 0)) return;
+            packet.targetGeneration = targetGeneration.load();
+            if (queue.size() == MaxQueuedPackets) {
+                queue.pop_front();
+                packet.flags |= LI_DS5_HAPTICS_PCM_FLAG_DISCONTINUITY;
+            }
+            queue.emplace_back(std::move(packet));
+        }
+        condition.notify_one();
+    }
+
+    void setUsbController(int controllerNumber, SDL_GameController* controller)
+    {
+        GUID container = GUID_NULL;
+        const bool identified = dualSenseUsbContainer(controller, container);
+        {
+            std::lock_guard lock(mutex);
+            if (usbController == controller && usbControllerNumber == controllerNumber &&
+                usbContainer == container) return;
+            usbController = controller;
+            usbControllerNumber = controllerNumber;
+            usbContainer = identified ? container : GUID_NULL;
+            usbTargetReady = false;
+            targetGeneration++;
+            queue.clear();
+            targetChanged = true;
+        }
+        condition.notify_one();
+        if (!identified) return;
 
         auto send = [controller](const std::array<uint8_t, sizeof(DualSenseOutputReport)>& effect) {
             return SDL_GameControllerSendEffect(controller, effect.data(),
@@ -420,6 +483,10 @@ struct DualSenseHapticsRenderer::Impl
         const bool wakeOk = send(wake);
         SDL_Delay(35);
         routeOk = send(route) && routeOk;
+        {
+            std::lock_guard lock(mutex);
+            usbTargetReady = routeOk && musicOk && wakeOk;
+        }
         SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO,
                     "DualSense USB audio activation: route=%s music-rumble=%s dsp-wake=%s",
                     routeOk ? "ok" : "failed", musicOk ? "ok" : "failed", wakeOk ? "ok" : "failed");
@@ -442,64 +509,26 @@ struct DualSenseHapticsRenderer::Impl
 DualSenseHapticsRenderer::DualSenseHapticsRenderer() : m_Impl(std::make_unique<Impl>()) {}
 DualSenseHapticsRenderer::~DualSenseHapticsRenderer() = default;
 
-bool DualSenseHapticsRenderer::isAvailable()
+bool DualSenseHapticsRenderer::isAvailable(SDL_GameController* controller)
 {
 #ifdef Q_OS_WIN32
+    GUID container;
+    if (!dualSenseUsbContainer(controller, container)) return false;
     const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool shouldUninitialize = SUCCEEDED(comResult);
-    if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE) {
-        return false;
-    }
-
-    bool found = false;
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    ComPtr<IMMDeviceCollection> devices;
-    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                   IID_PPV_ARGS(&enumerator))) &&
-        SUCCEEDED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices))) {
-        UINT count = 0;
-        devices->GetCount(&count);
-        for (UINT i = 0; i < count && !found; i++) {
-            ComPtr<IMMDevice> device;
-            if (FAILED(devices->Item(i, &device))) continue;
-
-            std::wstring friendlyName;
-            ComPtr<IPropertyStore> properties;
-            if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &properties))) {
-                PROPVARIANT value;
-                PropVariantInit(&value);
-                if (SUCCEEDED(properties->GetValue(PKEY_Device_FriendlyName, &value)) &&
-                    value.vt == VT_LPWSTR && value.pwszVal != nullptr) {
-                    friendlyName = value.pwszVal;
-                }
-                PropVariantClear(&value);
-            }
-            if (!Impl::isDualSenseName(friendlyName)) continue;
-
-            ComPtr<IAudioClient> candidate;
-            if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                                        reinterpret_cast<void**>(candidate.GetAddressOf())))) {
-                continue;
-            }
-            WAVEFORMATEX* mix = nullptr;
-            if (SUCCEEDED(candidate->GetMixFormat(&mix)) && mix != nullptr) {
-                bool isFloat = false;
-                WORD bits = 0;
-                found = Impl::classifyFormat(mix, isFloat, bits);
-            }
-            CoTaskMemFree(mix);
-        }
-    }
-
-    if (shouldUninitialize) {
-        CoUninitialize();
-    }
+    if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE) return false;
+    ComPtr<IAudioClient> candidate;
+    std::vector<BYTE> mixBytes;
+    std::wstring name;
+    const bool found = Impl::findEndpoint(container, candidate, mixBytes, name);
+    candidate.Reset();
+    if (shouldUninitialize) CoUninitialize();
     return found;
 #else
+    (void)controller;
     return false;
 #endif
 }
-
 void DualSenseHapticsRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
 {
 #ifdef Q_OS_WIN32
@@ -523,15 +552,7 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
     if (frame.pcmDataLength != 0) {
         packet.pcm.assign(frame.pcmData, frame.pcmData + frame.pcmDataLength);
     }
-    {
-        std::lock_guard lock(m_Impl->mutex);
-        if (m_Impl->queue.size() == MaxQueuedPackets) {
-            m_Impl->queue.pop_front();
-            packet.flags |= LI_DS5_HAPTICS_PCM_FLAG_DISCONTINUITY;
-        }
-        m_Impl->queue.emplace_back(std::move(packet));
-    }
-    m_Impl->condition.notify_one();
+    m_Impl->enqueuePacket(std::move(packet));
 #else
     (void)frame;
 #endif
@@ -541,7 +562,7 @@ void DualSenseHapticsRenderer::setControllerTarget(int controllerNumber,
                                                    SDL_GameController* controller, bool bluetooth)
 {
 #ifdef Q_OS_WIN32
-    m_Impl->setUsbController(bluetooth ? nullptr : controller);
+    m_Impl->setUsbController(controllerNumber, bluetooth ? nullptr : controller);
     m_Impl->bluetoothRenderer.setController(controllerNumber, controller, bluetooth);
 #elif defined(Q_OS_MACOS)
     if (m_Impl->macRenderer != nullptr) {
@@ -577,15 +598,7 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_AUDIO_PCM_FRAME& frame)
     if (frame.pcmDataLength != 0) {
         packet.pcm.assign(frame.pcmData, frame.pcmData + frame.pcmDataLength);
     }
-    {
-        std::lock_guard lock(m_Impl->mutex);
-        if (m_Impl->queue.size() == MaxQueuedPackets) {
-            m_Impl->queue.pop_front();
-            packet.flags |= LI_DS5_AUDIO_PCM_FLAG_DISCONTINUITY;
-        }
-        m_Impl->queue.emplace_back(std::move(packet));
-    }
-    m_Impl->condition.notify_one();
+    m_Impl->enqueuePacket(std::move(packet));
 #else
     (void)frame;
 #endif
@@ -595,6 +608,16 @@ bool DualSenseHapticsRenderer::isBluetoothActive() const
 {
 #ifdef Q_OS_WIN32
     return m_Impl->bluetoothRenderer.isActive();
+#else
+    return false;
+#endif
+}
+
+bool DualSenseHapticsRenderer::isUsbActive() const
+{
+#ifdef Q_OS_WIN32
+    std::lock_guard lock(m_Impl->mutex);
+    return m_Impl->usbTargetReady;
 #else
     return false;
 #endif
@@ -640,6 +663,13 @@ void DualSenseHapticsRenderer::reset()
 {
 #ifdef Q_OS_WIN32
     m_Impl->bluetoothRenderer.reset();
+    {
+        std::lock_guard lock(m_Impl->mutex);
+        m_Impl->targetGeneration++;
+        m_Impl->queue.clear();
+        m_Impl->targetChanged = true;
+    }
+    m_Impl->condition.notify_one();
 #elif defined(Q_OS_MACOS)
     if (m_Impl->macRenderer != nullptr) {
         m_Impl->macRenderer->reset();

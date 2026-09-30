@@ -108,13 +108,30 @@ callbacks remain null through setup, so SDP cannot accidentally advertise audio.
 Settings tests cover migration, pairing-key preservation, explicit preferences,
 and speaker defaults. These tests do not establish physical controller behavior.
 
-Before release, validate the existing Bluetooth packetizer's 512-input-frame to
-480-Opus-frame conversion against the controller's actual playback clock. Do not
-change the host clock to compensate without a measured contract. Additional
-release gates are neutral effects on rebind, recovery after a failed Bluetooth
-send, Opus reset/END silence, and USB endpoint identity matching with multiple or
-renamed controllers. Those issues remain open; this branch is a review candidate,
-not a hardware-certified replacement.
+The native-renderer test uses real Opus encoding/decoding and mocked HID writes.
+It verifies 512-input-frame cadence, valid padded 480-frame silence, partial-block
+discard on sequence gaps, END/reset silence, neutral rumble and trigger effects
+after controller replacement, and transient failure recovery without rebinding.
+Retries start at 50 ms and back off to at most 800 ms; stale PCM is discarded.
+A failed Bluetooth write retains its selected target and cannot route PCM to USB.
+Media discontinuities preserve independent trigger effects; controller/session
+boundaries reset them.
+
+Windows USB routing resolves the selected SDL HID interface's device container
+ID and requires exactly one active, matching 48 kHz four-channel audio endpoint.
+Friendly names are used only for logging. Missing identity or ambiguous endpoints
+fail closed. Queue generations discard old-controller PCM when targets change;
+audio-buffer waits are bounded. Tests cover renamed, foreign and ambiguous
+endpoint selection and verify that an unidentified USB target receives no output.
+Real endpoint identity, reconnects and output still require hardware validation.
+
+The preserved 512-to-480 conversion is documented in the pinned
+[upstream Bluetooth packetizer](https://github.com/Taveszfito/moonlight-extended/blob/aee77e490f85e78b6d5bde68f3c3309fdd5063cc/app/streaming/audio/dualsenseaudio.cpp):
+one 480-frame Opus block is consumed per 512 source frames by the wireless media
+clock. This is primary source evidence, not an independent clock measurement.
+Do not change the host's 48 kHz clock to compensate. Physical timing, multi-device
+USB routing, reconnects, and end-to-end host/client sessions remain release gates.
+This branch is a review candidate, not a hardware-certified replacement.
 
 The native-audio common-library commit and its optional-callback fix must be
 published to a reachable dependency fork before public clone/build reproduction.

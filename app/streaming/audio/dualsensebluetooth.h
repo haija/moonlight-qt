@@ -33,6 +33,9 @@ private:
     bool sendMediaLocked();
     bool sendRawReportLocked(const uint8_t* report, std::size_t size);
     void resetStreamLocked();
+    void clearEffectsLocked();
+    bool encodeSpeakerLocked(const int16_t* pcm);
+    void recordSendFailureLocked();
     void consumeFrameLocked(int16_t speakerLeft, int16_t speakerRight, int16_t hapticLeft,
                             int16_t hapticRight);
     int8_t filterLaneLocked(const std::array<double, 127>& lane) const;
@@ -43,6 +46,9 @@ private:
     int m_ControllerNumber = -1;
     bool m_Active = false;
     bool m_WakeSent = false;
+    uint64_t m_NextRetryMs = 0;
+    unsigned m_ConsecutiveFailures = 0;
+    bool m_SpeakerOpusReady = false;
     uint8_t m_Sequence = 0;
     uint8_t m_PacketCounter = 0;
     uint8_t m_LeftRumble = 0;

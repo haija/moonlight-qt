@@ -6,6 +6,18 @@
 
 namespace dualsense_haptics {
 
+template <typename Matches>
+int selectUniqueMatchingEndpoint(std::size_t count, Matches matches)
+{
+    int selected = -1;
+    for (std::size_t i = 0; i < count; i++) {
+        if (!matches(i)) continue;
+        if (selected >= 0) return -1;
+        selected = static_cast<int>(i);
+    }
+    return selected;
+}
+
 struct LocalControllerCandidate
 {
     int logicalNumber;

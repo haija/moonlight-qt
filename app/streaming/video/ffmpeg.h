@@ -55,6 +55,7 @@ private:
     const char* dynamicRangeLabel();
 
     void logVideoStats(VIDEO_STATS& stats, const char* title);
+    void logPeriodicVideoStats(uint64_t nowUs);
 
     void addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst);
 
@@ -119,6 +120,8 @@ private:
     VIDEO_STATS m_ActiveWndVideoStats;
     VIDEO_STATS m_LastWndVideoStats;
     VIDEO_STATS m_GlobalVideoStats;
+    VIDEO_STATS m_LogWndVideoStats;
+    uint64_t m_VideoStatsSessionStartUs;
     std::set<IFFmpegRenderer::RendererType> m_FailedRenderers;
 
     int m_FramesIn;

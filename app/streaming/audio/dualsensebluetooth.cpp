@@ -139,7 +139,11 @@ bool DualSenseBluetoothRenderer::sendStateLocked()
         report[report.size() - 4 + i] = (crc >> (i * 8)) & 0xff;
     }
     const bool sent = sendRawReportLocked(report.data(), report.size());
-    if (!sent) recordSendFailureLocked();
+    if (sent) {
+        m_OutputReady = true;
+        m_ConsecutiveFailures = 0;
+        m_NextRetryMs = 0;
+    } else recordSendFailureLocked();
     return sent;
 }
 
@@ -194,6 +198,7 @@ bool DualSenseBluetoothRenderer::sendMediaLocked()
     }
     const bool sent = sendRawReportLocked(report.data(), report.size());
     if (sent) {
+        m_OutputReady = true;
         m_ConsecutiveFailures = 0;
         m_NextRetryMs = 0;
     } else {
@@ -204,6 +209,7 @@ bool DualSenseBluetoothRenderer::sendMediaLocked()
 
 void DualSenseBluetoothRenderer::recordSendFailureLocked()
 {
+    m_OutputReady = false;
     // Drop media instead of replaying it late. Keep the Bluetooth target reserved
     // so a failed HID write cannot redirect its PCM to an unrelated USB device.
     resetStreamLocked();
@@ -323,14 +329,14 @@ void DualSenseBluetoothRenderer::setController(int controllerNumber, SDL_GameCon
 {
     std::lock_guard lock(m_Mutex);
     if (m_Controller == controller && m_ControllerNumber == controllerNumber &&
-        m_Active == (controller != nullptr && bluetooth)) {
+        m_TargetReserved == (controller != nullptr && bluetooth)) {
         return;
     }
 
     clearEffectsLocked();
     resetStreamLocked();
     // The previous handle is still owned by the input handler at this boundary.
-    if (m_Active && SDL_GameControllerGetAttached(m_Controller)) {
+    if (m_TargetReserved && SDL_GameControllerGetAttached(m_Controller)) {
         m_NextRetryMs = 0;
         sendStateLocked();
         m_NextRetryMs = 0;
@@ -338,7 +344,8 @@ void DualSenseBluetoothRenderer::setController(int controllerNumber, SDL_GameCon
     }
     m_Controller = controller;
     m_ControllerNumber = controllerNumber;
-    m_Active = controller != nullptr && bluetooth;
+    m_TargetReserved = controller != nullptr && bluetooth;
+    m_OutputReady = false;
     m_WakeSent = false;
     m_Sequence = 0;
     m_PacketCounter = 0;
@@ -350,7 +357,7 @@ void DualSenseBluetoothRenderer::setController(int controllerNumber, SDL_GameCon
     }
     resetStreamLocked();
 
-    if (m_Active) {
+    if (m_TargetReserved) {
         int opusError = OPUS_OK;
         m_Encoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &opusError);
         if (m_Encoder != nullptr && opusError == OPUS_OK) {
@@ -364,23 +371,29 @@ void DualSenseBluetoothRenderer::setController(int controllerNumber, SDL_GameCon
             m_Encoder = nullptr;
         }
         resetStreamLocked();
-        m_Active = m_Encoder != nullptr;
-        const bool ready = m_Active && sendStateLocked();
+        m_TargetReserved = m_Encoder != nullptr;
+        const bool ready = m_TargetReserved && sendStateLocked();
         SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "DualSense Bluetooth media transport: %s",
-                    ready ? "ready" : (m_Active ? "retrying" : "unavailable (Opus encoder failed)"));
+                    ready ? "ready" : (m_TargetReserved ? "retrying" : "unavailable (Opus encoder failed)"));
     }
 }
 
-bool DualSenseBluetoothRenderer::isActive() const
+bool DualSenseBluetoothRenderer::hasTarget() const
 {
     std::lock_guard lock(m_Mutex);
-    return m_Active;
+    return m_TargetReserved;
+}
+
+bool DualSenseBluetoothRenderer::isReady() const
+{
+    std::lock_guard lock(m_Mutex);
+    return m_TargetReserved && m_OutputReady && SDL_GameControllerGetAttached(m_Controller);
 }
 
 void DualSenseBluetoothRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
 {
     std::lock_guard lock(m_Mutex);
-    if (!m_Active || SDL_GetTicks64() < m_NextRetryMs ||
+    if (!m_TargetReserved || SDL_GetTicks64() < m_NextRetryMs ||
         !matchesController(m_ControllerNumber, frame.controllerNumber)) {
         return;
     }
@@ -438,7 +451,7 @@ void DualSenseBluetoothRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
 void DualSenseBluetoothRenderer::submit(const LI_DS5_AUDIO_PCM_FRAME& frame)
 {
     std::lock_guard lock(m_Mutex);
-    if (!m_Active || SDL_GetTicks64() < m_NextRetryMs ||
+    if (!m_TargetReserved || SDL_GetTicks64() < m_NextRetryMs ||
         !matchesController(m_ControllerNumber, frame.controllerNumber)) {
         return;
     }
@@ -474,7 +487,7 @@ void DualSenseBluetoothRenderer::setRumble(uint16_t controllerNumber, uint16_t l
                                            uint16_t highFrequency)
 {
     std::lock_guard lock(m_Mutex);
-    if (!m_Active || !matchesController(m_ControllerNumber, controllerNumber)) {
+    if (!m_TargetReserved || !matchesController(m_ControllerNumber, controllerNumber)) {
         return;
     }
     m_LeftRumble = static_cast<uint8_t>(std::min(255U, (lowFrequency >> 8) * 2U));
@@ -486,7 +499,7 @@ void DualSenseBluetoothRenderer::setLed(uint16_t controllerNumber, uint8_t red, 
                                         uint8_t blue)
 {
     std::lock_guard lock(m_Mutex);
-    if (!m_Active || !matchesController(m_ControllerNumber, controllerNumber)) {
+    if (!m_TargetReserved || !matchesController(m_ControllerNumber, controllerNumber)) {
         return;
     }
     m_Red = red;
@@ -499,7 +512,7 @@ void DualSenseBluetoothRenderer::setAdaptiveTriggers(uint16_t controllerNumber,
                                                      const DualSenseOutputReport* report)
 {
     std::lock_guard lock(m_Mutex);
-    if (!m_Active || !matchesController(m_ControllerNumber, controllerNumber) ||
+    if (!m_TargetReserved || !matchesController(m_ControllerNumber, controllerNumber) ||
         report == nullptr) {
         return;
     }
@@ -524,7 +537,7 @@ void DualSenseBluetoothRenderer::reset()
     std::lock_guard lock(m_Mutex);
     clearEffectsLocked();
     resetStreamLocked();
-    if (m_Active) {
+    if (m_TargetReserved) {
         m_NextRetryMs = 0;
         sendStateLocked();
         m_NextRetryMs = 0;

@@ -19,7 +19,10 @@ public:
     ~DualSenseBluetoothRenderer();
 
     void setController(int controllerNumber, SDL_GameController* controller, bool bluetooth);
-    bool isActive() const;
+    bool hasTarget() const;
+    // Reservation keeps failed Bluetooth PCM away from USB; readiness describes
+    // whether the most recent output attempt succeeded, for user-facing status.
+    bool isReady() const;
     void submit(const LI_DS5_HAPTICS_PCM_FRAME& frame);
     void submit(const LI_DS5_AUDIO_PCM_FRAME& frame);
     void setRumble(uint16_t controllerNumber, uint16_t lowFrequency, uint16_t highFrequency);
@@ -44,7 +47,8 @@ private:
     mutable std::mutex m_Mutex;
     SDL_GameController* m_Controller = nullptr;
     int m_ControllerNumber = -1;
-    bool m_Active = false;
+    bool m_TargetReserved = false;
+    bool m_OutputReady = false;
     bool m_WakeSent = false;
     uint64_t m_NextRetryMs = 0;
     unsigned m_ConsecutiveFailures = 0;

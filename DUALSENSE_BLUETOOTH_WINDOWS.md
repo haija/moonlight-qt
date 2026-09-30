@@ -114,6 +114,9 @@ discard on sequence gaps, END/reset silence, neutral rumble and trigger effects
 after controller replacement, and transient failure recovery without rebinding.
 Retries start at 50 ms and back off to at most 800 ms; stale PCM is discarded.
 A failed Bluetooth write retains its selected target and cannot route PCM to USB.
+Output readiness is separate from that reservation: initial or later HID failures
+clear readiness, so unavailable Bluetooth output does not suppress the launch
+warning. A successful state/media retry restores readiness without rebinding.
 Media discontinuities preserve independent trigger effects; controller/session
 boundaries reset them.
 

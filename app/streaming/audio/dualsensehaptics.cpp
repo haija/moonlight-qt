@@ -538,7 +538,7 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
         return;
     }
 
-    if (m_Impl->bluetoothRenderer.isActive()) {
+    if (m_Impl->bluetoothRenderer.hasTarget()) {
         m_Impl->bluetoothRenderer.submit(frame);
         return;
     }
@@ -584,7 +584,7 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_AUDIO_PCM_FRAME& frame)
         return;
     }
 
-    if (m_Impl->bluetoothRenderer.isActive()) {
+    if (m_Impl->bluetoothRenderer.hasTarget()) {
         m_Impl->bluetoothRenderer.submit(frame);
         return;
     }
@@ -604,10 +604,10 @@ void DualSenseHapticsRenderer::submit(const LI_DS5_AUDIO_PCM_FRAME& frame)
 #endif
 }
 
-bool DualSenseHapticsRenderer::isBluetoothActive() const
+bool DualSenseHapticsRenderer::isBluetoothReady() const
 {
 #ifdef Q_OS_WIN32
-    return m_Impl->bluetoothRenderer.isActive();
+    return m_Impl->bluetoothRenderer.isReady();
 #else
     return false;
 #endif

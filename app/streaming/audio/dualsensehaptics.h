@@ -21,7 +21,7 @@ public:
     void submit(const LI_DS5_AUDIO_PCM_FRAME& frame);
     void setControllerTarget(int controllerNumber, SDL_GameController* controller = nullptr,
                              bool bluetooth = false);
-    bool isBluetoothActive() const;
+    bool isBluetoothReady() const;
     bool isUsbActive() const;
     void setBluetoothRumble(uint16_t controllerNumber, uint16_t lowFrequency,
                             uint16_t highFrequency);

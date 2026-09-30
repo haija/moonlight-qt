@@ -4315,7 +4315,7 @@ void Session::start()
         DualSenseHapticsRenderer::isAvailable(m_InputHandler->getNativeDualSenseController());
     if (enablePhysicalDualSenseHaptics && !usbDualSenseHapticsAvailable &&
         (m_DualSenseHapticsRenderer == nullptr ||
-         !m_DualSenseHapticsRenderer->isBluetoothActive())) {
+         !m_DualSenseHapticsRenderer->isBluetoothReady())) {
         emitLaunchWarning(
             tr("No native DualSense output is active. Connect a USB DualSense with one matching "
                "four-channel audio endpoint, or pair it over Bluetooth with the bundled SDL runtime. "

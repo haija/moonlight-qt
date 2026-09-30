@@ -182,32 +182,65 @@ int main(int argc, char** argv)
         renderer.setController(3, first, true);
         uint32_t sequence = 0;
         failMediaOnce = true;
+        require(renderer.isReady(), "Successful Bluetooth initialization was not ready");
         haptics(renderer, sequence);
-        require(renderer.isActive(), "One send failure latched the Bluetooth target off");
+        require(renderer.hasTarget(), "One send failure latched the Bluetooth target off");
+        require(!renderer.isReady(), "Failed media output remained ready");
         const auto count = writes.size();
         for (unsigned i = 0; i < 100; i++) haptics(renderer, sequence);
         require(writes.size() == count, "Backoff did not bound HID attempts");
         nowMs += 50;
         haptics(renderer, sequence);
+        require(renderer.isReady(), "Successful media retry did not restore readiness");
         requireSilent(lastMedia());
     }
     writes.clear(); failAll = true;
+#ifdef Q_OS_WIN32
+    {
+        DualSenseHapticsRenderer renderer;
+        renderer.setControllerTarget(3, first, true);
+        require(!renderer.isBluetoothReady(), "Launch status hid an initial HID failure");
+        require(!renderer.isUsbActive(), "Failed Bluetooth initialization enabled USB output");
+        std::array<uint8_t, 240 * 8> pcm = {};
+        LI_DS5_AUDIO_PCM_FRAME frame = {};
+        frame.controllerNumber = 3; frame.sampleRate = 48000;
+        frame.channelCount = 4; frame.bitsPerSample = 16;
+        frame.frameCount = 240; frame.pcmData = pcm.data(); frame.pcmDataLength = pcm.size();
+        const auto count = writes.size();
+        renderer.submit(frame);
+        require(writes.size() == count && !renderer.isBluetoothReady(),
+                "Not-ready output bypassed Bluetooth backoff");
+        failAll = false; nowMs += 50;
+        for (unsigned i = 0; i < 3; ++i) { frame.sequenceNumber = i; renderer.submit(frame); }
+        require(renderer.isBluetoothReady() && !renderer.isUsbActive(),
+                "Reserved Bluetooth target did not recover through its normal PCM route");
+        requireSilent(lastMedia());
+        renderer.setControllerTarget(-1);
+        require(!renderer.isBluetoothReady(), "Unbound renderer status remained ready");
+    }
+    writes.clear(); failAll = true;
+#endif
     {
         DualSenseBluetoothRenderer renderer;
         renderer.setController(3, first, true);
+        require(renderer.hasTarget() && !renderer.isReady(), "Failed initialization appeared ready or lost its target");
         uint32_t sequence = 0;
         const auto count = writes.size();
         quad(renderer, sequence, 2048);
-        require(writes.size() == count && renderer.isActive(), "Unavailable HID was retried without backoff");
+        require(writes.size() == count && renderer.hasTarget(), "Unavailable HID was retried without backoff");
         nowMs += 50;
         quad(renderer, sequence, 512);
         const auto afterRetry = writes.size();
         nowMs += 99;
         quad(renderer, sequence, 2048);
         require(writes.size() == afterRetry, "Exponential retry interval was not enforced");
+        require(!renderer.isReady(), "Persistent HID failures appeared ready");
         failAll = false; nowMs += 1;
         quad(renderer, sequence, 512);
+        require(renderer.isReady(), "Recovery required a rebind to become ready");
         requireSilent(lastMedia());
+        renderer.setController(-1, nullptr, false);
+        require(!renderer.hasTarget() && !renderer.isReady(), "Unbound target remained ready");
     }
     qInfo("DualSense Bluetooth codec, effect-boundary, cadence and retry tests passed");
     return 0;

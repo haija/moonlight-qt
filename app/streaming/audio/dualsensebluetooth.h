@@ -49,6 +49,7 @@ private:
     uint64_t m_NextRetryMs = 0;
     unsigned m_ConsecutiveFailures = 0;
     bool m_SpeakerOpusReady = false;
+    bool m_QuadAudioStream = false;
     uint8_t m_Sequence = 0;
     uint8_t m_PacketCounter = 0;
     uint8_t m_LeftRumble = 0;

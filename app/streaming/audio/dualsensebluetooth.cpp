@@ -251,6 +251,7 @@ void DualSenseBluetoothRenderer::resetStreamLocked()
     m_SpeakerFrames = 0;
     m_SpeakerOpus.fill(0);
     m_ExpectedSequence = -1;
+    m_QuadAudioStream = false;
     if (m_Encoder != nullptr) {
         opus_encoder_ctl(m_Encoder, OPUS_RESET_STATE);
         const std::array<int16_t, 480 * 2> silence = {};
@@ -388,7 +389,9 @@ void DualSenseBluetoothRenderer::submit(const LI_DS5_HAPTICS_PCM_FRAME& frame)
                                                LI_DS5_HAPTICS_PCM_FLAG_DISCONTINUITY)) != 0 ||
                                (m_ExpectedSequence >= 0 &&
                                 frame.sequenceNumber != static_cast<uint32_t>(m_ExpectedSequence));
-    if (discontinuity) {
+    // A host kill switch may transition to legacy PCM without a sequence gap.
+    // Haptics-only packets must never replay the last quad speaker block.
+    if (discontinuity || m_QuadAudioStream) {
         resetStreamLocked();
     }
     m_ExpectedSequence = static_cast<int64_t>(frame.sequenceNumber) + 1;
@@ -460,6 +463,7 @@ void DualSenseBluetoothRenderer::submit(const LI_DS5_AUDIO_PCM_FRAME& frame)
     }
 
     const auto* pcm = reinterpret_cast<const int16_t*>(frame.pcmData);
+    m_QuadAudioStream = true;
     for (uint16_t i = 0; i < frame.frameCount; i++) {
         consumeFrameLocked(pcm[i * 4], pcm[i * 4 + 1], pcm[i * 4 + 2], pcm[i * 4 + 3]);
         if (SDL_GetTicks64() < m_NextRetryMs) return;

@@ -143,6 +143,9 @@ int main(int argc, char** argv)
         requireSilent(lastMedia());
         require(lastMedia().report[23] == 0x21 && lastMedia().report[34] == 0x21,
                 "Media discontinuity cleared independent trigger effects");
+        quad(renderer, sequence, 512, 22000);
+        haptics(renderer, sequence); // Continuous sequence when the host disables speaker audio.
+        requireSilent(lastMedia());
         LI_DS5_AUDIO_PCM_FRAME end = {};
         end.controllerNumber = 3; end.sequenceNumber = sequence++;
         end.flags = LI_DS5_AUDIO_PCM_FLAG_STREAM_END;

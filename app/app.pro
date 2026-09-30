@@ -706,9 +706,9 @@ unix:!macx: {
 }
 win32 {
     RC_ICONS = moonlight.ico
-    QMAKE_TARGET_COMPANY = Moonlight V+ Project
-    QMAKE_TARGET_DESCRIPTION = Moonlight V+ for PC Game Streaming Client
-    QMAKE_TARGET_PRODUCT = Moonlight V+ for PC
+    QMAKE_TARGET_COMPANY = Codex Moonlight Project
+    QMAKE_TARGET_DESCRIPTION = Codex Moonlight Game Streaming Client
+    QMAKE_TARGET_PRODUCT = Codex Moonlight
 
     CONFIG -= embed_manifest_exe
     QMAKE_LFLAGS += /MANIFEST:embed /MANIFESTINPUT:$${PWD}/Moonlight.exe.manifest

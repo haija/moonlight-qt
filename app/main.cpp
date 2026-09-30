@@ -19,6 +19,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include "settings/settingsmigration.h"
 
 #ifdef Q_OS_UNIX
 #include <sys/socket.h>
@@ -741,9 +742,16 @@ int main(int argc, char *argv[])
     // Set these here to allow us to use the default QSettings constructor.
     // These also ensure that our cache directory is named correctly. As such,
     // it is critical that these be called before Path::initialize().
-    QCoreApplication::setOrganizationName("Moonlight Game Streaming Project");
-    QCoreApplication::setOrganizationDomain("moonlight-stream.com");
-    QCoreApplication::setApplicationName("Moonlight");
+    QCoreApplication::setOrganizationName("Codex Moonlight Project");
+    QCoreApplication::setOrganizationDomain("codex-moonlight.local");
+    QCoreApplication::setApplicationName("Codex Moonlight");
+
+    const auto migratePreviousSettings = [] {
+        QSettings destination;
+        QSettings previous(QSettings::defaultFormat(), QSettings::UserScope,
+                           "Moonlight Game Streaming Project", "Moonlight");
+        migrateSettingsIfEmpty(destination, previous);
+    };
 
     if (QFile(QDir(startupApplicationDir).filePath("portable.dat")).exists()) {
         QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -751,10 +759,12 @@ int main(int argc, char *argv[])
         QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, startupApplicationDir);
 
         // Initialize paths for portable mode
+        migratePreviousSettings();
         Path::initialize(true, startupApplicationDir);
     }
     else {
         // Initialize paths for standard installation
+        migratePreviousSettings();
         Path::initialize(false);
     }
 
@@ -1052,8 +1062,8 @@ int main(int argc, char *argv[])
     // Set our app name for SDL to use with PulseAudio and PipeWire. This matches what we
     // provide as our app name to libsoundio too. On SDL 2.0.18+, SDL_APP_NAME is also used
     // for screensaver inhibitor reporting.
-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Moonlight V+ for PC");
-    SDL_SetHint(SDL_HINT_APP_NAME, "Moonlight V+ for PC");
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "Codex Moonlight");
+    SDL_SetHint(SDL_HINT_APP_NAME, "Codex Moonlight");
 
     // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
     // support applications that assume they can warp the cursor (which isn't possible
@@ -1091,7 +1101,7 @@ int main(int argc, char *argv[])
     }
 
     QGuiApplication app(argc, argv);
-    QGuiApplication::setApplicationDisplayName(QStringLiteral("Moonlight V+ for PC"));
+    QGuiApplication::setApplicationDisplayName(QStringLiteral("Codex Moonlight"));
 
 #ifdef Q_OS_DARWIN
     // macOS defaults "Keyboard navigation" to text fields and lists only, which

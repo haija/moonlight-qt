@@ -4286,7 +4286,8 @@ void Session::start()
 #ifdef Q_OS_WIN32
         enablePhysicalDualSenseHaptics = true;
         k_ConnCallbacks.ds5HapticsPcm = Session::clDs5HapticsPcm;
-        k_ConnCallbacks.ds5AudioPcm = Session::clDs5AudioPcm;
+        k_ConnCallbacks.ds5AudioPcm = m_Preferences->dualSenseSpeakerAudio
+            ? Session::clDs5AudioPcm : nullptr;
         if (m_DualSenseHapticsRenderer == nullptr) {
             m_DualSenseHapticsRenderer = new DualSenseHapticsRenderer();
         }

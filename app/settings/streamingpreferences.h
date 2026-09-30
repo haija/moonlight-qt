@@ -219,6 +219,8 @@ public:
     Q_PROPERTY(bool absoluteTouchMode MEMBER absoluteTouchMode NOTIFY absoluteTouchModeChanged)
     Q_PROPERTY(bool enableNativeTouchpad MEMBER enableNativeTouchpad NOTIFY enableNativeTouchpadChanged)
     Q_PROPERTY(DualSenseHapticsMode dualSenseHapticsMode MEMBER dualSenseHapticsMode NOTIFY dualSenseHapticsModeChanged)
+    Q_PROPERTY(bool dualSenseSpeakerAudio MEMBER dualSenseSpeakerAudio NOTIFY dualSenseSpeakerAudioChanged)
+    Q_PROPERTY(bool logVideoCadence MEMBER logVideoCadence NOTIFY logVideoCadenceChanged)
     Q_PROPERTY(bool framePacing MEMBER framePacing NOTIFY framePacingChanged)
     Q_PROPERTY(bool videoEnhancement MEMBER videoEnhancement NOTIFY videoEnhancementChanged)
     Q_PROPERTY(bool streamResolutionScale MEMBER streamResolutionScale NOTIFY streamResolutionScaleChanged)
@@ -296,6 +298,8 @@ public:
     bool absoluteTouchMode;
     bool enableNativeTouchpad;
     DualSenseHapticsMode dualSenseHapticsMode;
+    bool dualSenseSpeakerAudio;
+    bool logVideoCadence;
     bool framePacing;
     bool videoEnhancement;
     bool streamResolutionScale;
@@ -364,6 +368,8 @@ signals:
     void absoluteTouchModeChanged();
     void enableNativeTouchpadChanged();
     void dualSenseHapticsModeChanged();
+    void dualSenseSpeakerAudioChanged();
+    void logVideoCadenceChanged();
     void audioConfigChanged();
     void videoCodecConfigChanged();
     void enableHdrChanged();

@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$DependenciesRoot
+    [string]$DependenciesRoot,
+
+    [ValidateSet('x64', 'arm64')]
+    [string[]]$TargetArchitectures = @('x64', 'arm64')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,15 +38,15 @@ try {
     New-Item -ItemType Directory -Path $ResolvedWork | Out-Null
     $SdlSource = Join-Path $ResolvedWork 'SDL'
     $CompatSource = Join-Path $ResolvedWork 'sdl2-compat'
-    Invoke-Checked git clone --filter=blob:none $SdlRepository $SdlSource
-    Invoke-Checked git -C $SdlSource checkout $SdlRevision
-    Invoke-Checked git clone --filter=blob:none $CompatRepository $CompatSource
-    Invoke-Checked git -C $CompatSource checkout $CompatRevision
+    Invoke-Checked -Executable git -Arguments @('clone', '--filter=blob:none', $SdlRepository, $SdlSource)
+    Invoke-Checked -Executable git -Arguments @('-C', $SdlSource, 'checkout', $SdlRevision)
+    Invoke-Checked -Executable git -Arguments @('clone', '--filter=blob:none', $CompatRepository, $CompatSource)
+    Invoke-Checked -Executable git -Arguments @('-C', $CompatSource, 'checkout', $CompatRevision)
 
     $Architectures = @(
         @{ Name = 'x64'; Generator = 'x64' },
         @{ Name = 'arm64'; Generator = 'ARM64' }
-    )
+    ) | Where-Object { $_.Name -in $TargetArchitectures }
 
     foreach ($Architecture in $Architectures) {
         $Name = $Architecture.Name
@@ -53,19 +56,27 @@ try {
         $CompatBuild = Join-Path $ResolvedWork "compat-build-$Name"
         $CompatStage = Join-Path $ResolvedWork "compat-stage-$Name"
 
-        Invoke-Checked cmake -S $SdlSource -B $SdlBuild -A $Generator `
-            "-DCMAKE_INSTALL_PREFIX=$SdlStage" `
-            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF `
-            -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF -DSDL_INSTALL_DOCS=OFF
-        Invoke-Checked cmake --build $SdlBuild --config Release --target INSTALL --parallel 2
+        Invoke-Checked -Executable cmake -Arguments @(
+            '-S', $SdlSource, '-B', $SdlBuild, '-A', $Generator,
+            "-DCMAKE_INSTALL_PREFIX=$SdlStage",
+            '-DSDL_SHARED=ON', '-DSDL_STATIC=OFF', '-DSDL_TEST_LIBRARY=OFF',
+            '-DSDL_TESTS=OFF', '-DSDL_INSTALL_TESTS=OFF', '-DSDL_INSTALL_DOCS=OFF'
+        )
+        Invoke-Checked -Executable cmake -Arguments @(
+            '--build', $SdlBuild, '--config', 'Release', '--target', 'INSTALL', '--parallel', '2'
+        )
 
-        Invoke-Checked cmake -S $CompatSource -B $CompatBuild -A $Generator `
-            "-DCMAKE_PREFIX_PATH=$SdlStage" `
-            "-DSDL3_INCLUDE_DIRS=$SdlStage\include" `
-            "-DCMAKE_INSTALL_PREFIX=$CompatStage" `
-            -DSDL2COMPAT_TESTS=OFF -DSDL2COMPAT_INSTALL=ON `
-            -DSDL2COMPAT_INSTALL_SDL3=ON
-        Invoke-Checked cmake --build $CompatBuild --config Release --target INSTALL --parallel 2
+        Invoke-Checked -Executable cmake -Arguments @(
+            '-S', $CompatSource, '-B', $CompatBuild, '-A', $Generator,
+            "-DCMAKE_PREFIX_PATH=$SdlStage",
+            "-DSDL3_INCLUDE_DIRS=$SdlStage\include",
+            "-DCMAKE_INSTALL_PREFIX=$CompatStage",
+            '-DSDL2COMPAT_TESTS=OFF', '-DSDL2COMPAT_INSTALL=ON',
+            '-DSDL2COMPAT_INSTALL_SDL3=ON'
+        )
+        Invoke-Checked -Executable cmake -Arguments @(
+            '--build', $CompatBuild, '--config', 'Release', '--target', 'INSTALL', '--parallel', '2'
+        )
 
         $Destination = Join-Path $DependenciesRoot "lib\$Name"
         Copy-Item -LiteralPath (Join-Path $CompatStage 'bin\SDL2.dll') `

@@ -238,6 +238,8 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
       m_ConsecutiveFailedDecodes(0),
       m_Pacer(nullptr),
       m_BwTracker(10, 250),
+      m_VideoStatsSessionStartUs(0),
+      m_LogVideoCadence(!testOnly && StreamingPreferences::get()->logVideoCadence),
       m_FramesIn(0),
       m_FramesOut(0),
       m_LastFrameNumber(0),
@@ -254,6 +256,7 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(bool testOnly)
     SDL_zero(m_ActiveWndVideoStats);
     SDL_zero(m_LastWndVideoStats);
     SDL_zero(m_GlobalVideoStats);
+    SDL_zero(m_LogWndVideoStats);
 
     SDL_AtomicSet(&m_DecoderThreadShouldQuit, 0);
 }
@@ -1033,6 +1036,36 @@ void FFmpegVideoDecoder::logVideoStats(VIDEO_STATS& stats, const char* title)
                     "\n%s\n------------------\n%s",
                     title, videoStatsStr);
     }
+}
+
+void FFmpegVideoDecoder::logPeriodicVideoStats(uint64_t nowUs)
+{
+    // Only called by the submission thread at the existing stats-window boundary.
+    // Reuse its snapshots without reading renderer state or adding cross-thread work.
+    auto& stats = m_LogWndVideoStats;
+    const auto averageMs = [](uint64_t totalUs, uint32_t frames) {
+        return frames ? static_cast<double>(totalUs) / 1000.0 / frames : 0.0;
+    };
+    const double hostMs = stats.framesWithHostProcessingLatency
+        ? static_cast<double>(stats.totalHostProcessingLatency) / 10.0 /
+          stats.framesWithHostProcessingLatency : 0.0;
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Video cadence: session_s=%.3f window_s=%.3f target_fps=%d "
+                "received_fps=%.2f decoded_fps=%.2f rendered_fps=%.2f "
+                "network_dropped=%u pacer_dropped=%u host_processing_ms=%.3f "
+                "host_latency_samples=%u reassembly_ms=%.3f decode_ms=%.3f "
+                "pacer_ms=%.3f render_ms=%.3f rtt_ms=%u rtt_variance_ms=%u",
+                static_cast<double>(nowUs - m_VideoStatsSessionStartUs) / 1000000.0,
+                static_cast<double>(nowUs - stats.measurementStartUs) / 1000000.0,
+                m_StreamFps, stats.receivedFps, stats.decodedFps, stats.renderedFps,
+                stats.networkDroppedFrames, stats.pacerDroppedFrames, hostMs,
+                stats.framesWithHostProcessingLatency,
+                averageMs(stats.totalReassemblyTimeUs, stats.receivedFrames),
+                averageMs(stats.totalDecodeTimeUs, stats.decodedFrames),
+                averageMs(stats.totalPacerTimeUs, stats.renderedFrames),
+                averageMs(stats.totalRenderTimeUs, stats.renderedFrames),
+                stats.lastRtt, stats.lastRttVariance);
 }
 
 IFFmpegRenderer* FFmpegVideoDecoder::createHwAccelRenderer(const AVCodecHWConfig* hwDecodeCfg, PDECODER_PARAMETERS params, int pass)
@@ -2174,6 +2207,11 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 
     if (!m_LastFrameNumber) {
         m_ActiveWndVideoStats.measurementStartUs = LiGetMicroseconds();
+        m_VideoStatsSessionStartUs = m_ActiveWndVideoStats.measurementStartUs;
+        if (m_LogVideoCadence) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Video cadence: first_frame session_s=0 target_fps=%d", m_StreamFps);
+        }
         m_LastFrameNumber = du->frameNumber;
     }
     else {
@@ -2201,6 +2239,16 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 
         // Accumulate these values into the global stats
         addVideoStats(m_ActiveWndVideoStats, m_GlobalVideoStats);
+
+        // Keep opted-in logs useful independently of the overlay state.
+        if (m_LogVideoCadence) {
+            addVideoStats(m_ActiveWndVideoStats, m_LogWndVideoStats);
+            const uint64_t nowUs = LiGetMicroseconds();
+            if (nowUs - m_LogWndVideoStats.measurementStartUs >= 5000000) {
+                logPeriodicVideoStats(nowUs);
+                SDL_zero(m_LogWndVideoStats);
+            }
+        }
 
         // Move this window into the last window slot and clear it for next window
         SDL_memcpy(&m_LastWndVideoStats, &m_ActiveWndVideoStats, sizeof(m_ActiveWndVideoStats));

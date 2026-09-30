@@ -478,7 +478,7 @@ Column {
             id: dualSenseHapticsRow
             title: qsTr("DualSense haptics")
             description: selectedValue === StreamingPreferences.DSHM_PHYSICAL
-                ? qsTr("Sends the original authored PCM to channels 3 and 4 of a USB-connected DualSense. The endpoint is checked before connecting. Changes apply to the next stream.")
+                ? qsTr("Sends native controller audio and authored haptics to a physical DualSense connected by USB or Bluetooth. Changes apply to the next stream.")
                 : qsTr("Receives a compact analyzed haptics signal and renders it through the connected controller's vibration motors. Changes apply to the next stream.")
             selectedValue: StreamingPreferences.dualSenseHapticsMode
             onValueActivated: function(value) { StreamingPreferences.dualSenseHapticsMode = value }
@@ -488,6 +488,14 @@ Column {
                 ListElement { text: qsTr("Physical DualSense (native HD haptics)"); val: StreamingPreferences.DSHM_PHYSICAL }
                 ListElement { text: qsTr("Simulated DualSense (analyzed vibration)"); val: StreamingPreferences.DSHM_EMULATED }
             }
+        }
+        ToggleRow {
+            visible: Qt.platform.os === "windows"
+            enabled: StreamingPreferences.dualSenseHapticsMode === StreamingPreferences.DSHM_PHYSICAL
+            title: qsTr("Play controller-speaker audio")
+            description: qsTr("Receives game-authored DualSense speaker effects from compatible Foundation hosts. Turn this off to keep native haptics without speaker audio. This does not enable the controller microphone or route game audio to a headset. Changes apply to the next stream.")
+            checked: StreamingPreferences.dualSenseSpeakerAudio
+            onToggled: function(value) { StreamingPreferences.dualSenseSpeakerAudio = value }
         }
     }
 
@@ -732,6 +740,12 @@ Column {
                          qsTr("The performance overlay is not supported on Steam Link or Raspberry Pi.")
             checked: StreamingPreferences.showPerformanceOverlay
             onToggled: function(value) { StreamingPreferences.showPerformanceOverlay = value }
+        }
+        ToggleRow {
+            title: qsTr("Log video cadence")
+            description: qsTr("Writes video frame rates and latency measurements to the local log every five seconds, independently of the performance overlay. Changes apply to the next stream.")
+            checked: StreamingPreferences.logVideoCadence
+            onToggled: function(value) { StreamingPreferences.logVideoCadence = value }
         }
     }
 

@@ -1,4 +1,5 @@
 #include "streamingpreferences.h"
+#include "settingsmigration.h"
 #include "utils.h"
 
 #include <QSettings>
@@ -36,6 +37,8 @@
 #define SER_ABSTOUCHMODE "abstouchmode"
 #define SER_NATIVETOUCHPAD "nativeTouchpad"
 #define SER_DUALSENSEHAPTICSMODE "dualSenseHapticsMode"
+#define SER_DUALSENSESPEAKERAUDIO "dualSenseSpeakerAudio"
+#define SER_LOGVIDEOCADENCE "logVideoCadence"
 #define SER_STARTWINDOWED "startwindowed"
 #define SER_FRAMEPACING "framepacing"
 #define SER_VIDEOENHANCEMENT "videoenhancement"
@@ -249,11 +252,7 @@ void StreamingPreferences::reload()
     showLocalCursor = settings.value(SER_SHOWLOCALCURSOR, false).toBool();
     absoluteTouchMode = settings.value(SER_ABSTOUCHMODE, true).toBool();
     enableNativeTouchpad = settings.value(SER_NATIVETOUCHPAD, false).toBool();
-#ifdef Q_OS_WIN32
-    constexpr auto defaultDualSenseHapticsMode = DSHM_PHYSICAL;
-#else
     constexpr auto defaultDualSenseHapticsMode = DSHM_EMULATED;
-#endif
     dualSenseHapticsMode = static_cast<DualSenseHapticsMode>(
         settings.value(SER_DUALSENSEHAPTICSMODE, defaultDualSenseHapticsMode).toInt());
     if (dualSenseHapticsMode != DSHM_PHYSICAL && dualSenseHapticsMode != DSHM_EMULATED) {
@@ -267,6 +266,10 @@ void StreamingPreferences::reload()
     }
 #endif
     framePacing = settings.value(SER_FRAMEPACING, false).toBool();
+    // Preserve explicitly selected native output on upgrades. Fresh profiles
+    // require the user to opt into physical output and controller speaker audio.
+    dualSenseSpeakerAudio = loadDualSenseSpeakerAudio(settings, dualSenseHapticsMode == DSHM_PHYSICAL);
+    logVideoCadence = settings.value(SER_LOGVIDEOCADENCE, false).toBool();
     videoEnhancement = settings.value(SER_VIDEOENHANCEMENT, false).toBool();
     enableMicrophone = settings.value(SER_MICROPHONE, false).toBool();
     overlayMenuPosition = loadOverlayMenuPlacement(settings);
@@ -695,6 +698,8 @@ void StreamingPreferences::save()
     settings.setValue(SER_ABSTOUCHMODE, absoluteTouchMode);
     settings.setValue(SER_NATIVETOUCHPAD, enableNativeTouchpad);
     settings.setValue(SER_DUALSENSEHAPTICSMODE, dualSenseHapticsMode);
+    settings.setValue(SER_DUALSENSESPEAKERAUDIO, dualSenseSpeakerAudio);
+    settings.setValue(SER_LOGVIDEOCADENCE, logVideoCadence);
     settings.setValue(SER_FRAMEPACING, framePacing);
     settings.setValue(SER_VIDEOENHANCEMENT, videoEnhancement);
     settings.setValue(SER_STREAMRESOLUTIONSCALE, streamResolutionScale);
